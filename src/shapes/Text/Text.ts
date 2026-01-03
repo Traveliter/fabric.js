@@ -49,6 +49,7 @@ import type { Gradient } from '../../gradient/Gradient';
 import type { Pattern } from '../../Pattern';
 import type { CSSRules } from '../../parser/typedefs';
 import { normalizeWs } from '../../util/internals/normalizeWhiteSpace';
+import { uid } from '../../util/internals/uid';
 
 let measuringContext: CanvasRenderingContext2D | null;
 
@@ -89,6 +90,16 @@ export type TextAlign =
 
 export type FontStyle = '' | typeof NORMAL | 'italic' | 'oblique';
 
+export type ParagraphStyle = {
+  align?: TextAlign;
+  lineHeight?: number;
+};
+
+export type Paragraph = {
+  id: string;
+  style?: ParagraphStyle;
+};
+
 /**
  * Measure and return the info of a single grapheme.
  * needs the the info of previous graphemes already filled
@@ -122,6 +133,7 @@ interface UniqueTextProps {
   direction: CanvasDirection;
   path?: Path;
   textDecorationThickness: number;
+  paragraphs?: Paragraph[];
 }
 
 export interface SerializedTextProps
@@ -414,9 +426,17 @@ export class FabricText<
   declare _unwrappedTextLines: string[][];
   declare _text: string[];
   declare cursorWidth: number;
-  declare __lineHeights: number[];
   declare __lineWidths: number[];
   declare initialized?: true;
+  paragraphs: Paragraph[] = [];
+
+  protected __paragraphRanges: Array<{
+    startChar: number;
+    endChar: number;
+    id: string;
+  }> = [];
+  protected __lineMeta: Array<any> = [];
+  protected __lineHeights: number[] = [];
 
   static cacheProperties = [...cacheProperties, ...additionalProps];
 
@@ -474,6 +494,7 @@ export class FabricText<
    * Does not return dimensions.
    */
   initDimensions() {
+    this.__syncParagraphsWithText();
     this._splitText();
     this._clearCache();
     this.dirty = true;
@@ -490,6 +511,46 @@ export class FabricText<
       this.enlargeSpaces();
     }
   }
+
+  protected __syncParagraphsWithText(): void {
+    const paragraphsFromText = (this.text || '').split(this._reNewline);
+    const paragraphCount = paragraphsFromText.length;
+    const currentParagraphs = Array.isArray(this.paragraphs)
+      ? this.paragraphs
+      : [];
+    const nextParagraphs = currentParagraphs.slice(0, paragraphCount);
+    const fallbackStyle =
+      currentParagraphs[currentParagraphs.length - 1]?.style;
+    for (let i = nextParagraphs.length; i < paragraphCount; i++) {
+      nextParagraphs.push({
+        id: `paragraph_${uid()}`,
+        ...(fallbackStyle ? { style: { ...fallbackStyle } } : {}),
+      });
+    }
+    for (const paragraph of nextParagraphs) {
+      if (!paragraph.id) {
+        paragraph.id = `paragraph_${uid()}`;
+      }
+    }
+    this.paragraphs = nextParagraphs;
+    this.__paragraphRanges = [];
+    let charIndex = 0;
+    for (let i = 0; i < paragraphCount; i++) {
+      const startChar = charIndex;
+      const endChar = startChar + paragraphsFromText[i].length;
+      this.__paragraphRanges.push({
+        startChar,
+        endChar,
+        id: nextParagraphs[i].id,
+      });
+      charIndex = endChar;
+      if (i < paragraphCount - 1) {
+        charIndex += 1;
+      }
+    }
+  }
+
+  protected __rebuildLineMetaAfterWrap(): void {}
 
   /**
    * Enlarge space boxes and shift the others
@@ -1773,6 +1834,10 @@ export class FabricText<
     return {
       ...super.toObject([...additionalProps, ...propertiesToInclude] as K[]),
       styles: stylesToArray(this.styles, this.text),
+      paragraphs: this.paragraphs?.map((paragraph) => ({
+        ...paragraph,
+        ...(paragraph.style ? { style: { ...paragraph.style } } : {}),
+      })),
       ...(this.path ? { path: this.path.toObject() } : {}),
     };
   }
@@ -1940,6 +2005,7 @@ export class FabricText<
       {
         ...object,
         styles: stylesFromArray(object.styles || {}, object.text),
+        paragraphs: object.paragraphs ?? [],
       },
       {
         extraParam: 'text',
