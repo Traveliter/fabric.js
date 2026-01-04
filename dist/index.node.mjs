@@ -19366,6 +19366,19 @@ function getMeasuringContext() {
  * @see {@link http://fabric5.fabricjs.com/fabric-intro-part-2#text}
  */
 class FabricText extends StyledText {
+  /**
+   * Returns the effective text alignment for a given *visual* line.
+   *
+   * Paragraph alignment (when available) takes precedence over `this.textAlign`.
+   * If no paragraph alignment exists for the line, we fallback to `this.textAlign`.
+   */
+  __getEffectiveAlignForLine(lineIndex) {
+    var _this$__lineMeta$line, _this$__lineMeta, _this$paragraphs;
+    const baseAlign = this.textAlign;
+    const paragraphIndex = (_this$__lineMeta$line = (_this$__lineMeta = this.__lineMeta) === null || _this$__lineMeta === void 0 || (_this$__lineMeta = _this$__lineMeta[lineIndex]) === null || _this$__lineMeta === void 0 ? void 0 : _this$__lineMeta.paragraphIndex) !== null && _this$__lineMeta$line !== void 0 ? _this$__lineMeta$line : 0;
+    const paragraphAlign = (_this$paragraphs = this.paragraphs) === null || _this$paragraphs === void 0 || (_this$paragraphs = _this$paragraphs[paragraphIndex]) === null || _this$paragraphs === void 0 || (_this$paragraphs = _this$paragraphs.style) === null || _this$paragraphs === void 0 ? void 0 : _this$paragraphs.align;
+    return paragraphAlign && (paragraphAlign === LEFT || paragraphAlign === CENTER || paragraphAlign === RIGHT || paragraphAlign === JUSTIFY || paragraphAlign === JUSTIFY_LEFT || paragraphAlign === JUSTIFY_CENTER || paragraphAlign === JUSTIFY_RIGHT) ? paragraphAlign : baseAlign;
+  }
   static getDefaults() {
     return {
       ...super.getDefaults(),
@@ -19381,6 +19394,10 @@ class FabricText extends StyledText {
      * @protected
      */
     _defineProperty(this, "__charBounds", []);
+    _defineProperty(this, "paragraphs", []);
+    _defineProperty(this, "__paragraphRanges", []);
+    _defineProperty(this, "__lineMeta", []);
+    _defineProperty(this, "__rtLineHeights", []);
     Object.assign(this, FabricText.ownDefaults);
     this.setOptions(options);
     if (!this.styles) {
@@ -19425,7 +19442,14 @@ class FabricText extends StyledText {
    * Does not return dimensions.
    */
   initDimensions() {
+    var _this$paragraphs2, _this$paragraphs3;
+    if ((_this$paragraphs2 = this.paragraphs) !== null && _this$paragraphs2 !== void 0 && _this$paragraphs2.length) {
+      this.__syncParagraphsWithText();
+    }
     this._splitText();
+    if ((_this$paragraphs3 = this.paragraphs) !== null && _this$paragraphs3 !== void 0 && _this$paragraphs3.length) {
+      this.__rebuildLineMetaAfterWrap();
+    }
     this._clearCache();
     this.dirty = true;
     if (this.path) {
@@ -19438,6 +19462,177 @@ class FabricText extends StyledText {
     if (this.textAlign.includes(JUSTIFY)) {
       // once text is measured we need to make space fatter to make justified text.
       this.enlargeSpaces();
+    }
+  }
+  __syncParagraphsWithText() {
+    var _currentParagraphs;
+    const paragraphsFromText = (this.text || '').split(this._reNewline);
+    const paragraphCount = paragraphsFromText.length;
+    const currentParagraphs = Array.isArray(this.paragraphs) ? this.paragraphs : [];
+    const nextParagraphs = currentParagraphs.slice(0, paragraphCount);
+    const fallbackStyle = (_currentParagraphs = currentParagraphs[currentParagraphs.length - 1]) === null || _currentParagraphs === void 0 ? void 0 : _currentParagraphs.style;
+    for (let i = nextParagraphs.length; i < paragraphCount; i++) {
+      nextParagraphs.push({
+        id: `paragraph_${uid()}`,
+        ...(fallbackStyle ? {
+          style: {
+            ...fallbackStyle
+          }
+        } : {})
+      });
+    }
+    for (const paragraph of nextParagraphs) {
+      if (!paragraph.id) {
+        paragraph.id = `paragraph_${uid()}`;
+      }
+    }
+    this.paragraphs = nextParagraphs;
+    this.__paragraphRanges = [];
+    let charIndex = 0;
+    for (let i = 0; i < paragraphCount; i++) {
+      const startChar = charIndex;
+      const len = paragraphsFromText[i].length;
+      const endChar = len > 0 ? startChar + len - 1 : startChar;
+      this.__paragraphRanges.push({
+        startChar,
+        endChar,
+        id: nextParagraphs[i].id
+      });
+      charIndex = endChar + 1;
+      if (i < paragraphCount - 1) {
+        charIndex += 1;
+      }
+    }
+  }
+
+  /**
+   * Keep `this.paragraphs` in sync with an insertion/removal of hard newlines.
+   *
+   * `__syncParagraphsWithText()` mostly syncs by count/order. When a newline is inserted
+   * in the middle of the text, paragraph styles would otherwise effectively stick to
+   * paragraph indices and appear to jump.
+   *
+   * Expected behavior:
+   * - inserting a newline that splits a paragraph creates a new paragraph that inherits
+   *   the style of the paragraph being split.
+   * - removing a newline that joins paragraphs removes the paragraph(s) that got joined.
+   */
+  __syncParagraphsForHardNewlineChange(params) {
+    var _this$paragraphs4;
+    const {
+      charIndex,
+      inserted,
+      removed
+    } = params;
+    if (!((_this$paragraphs4 = this.paragraphs) !== null && _this$paragraphs4 !== void 0 && _this$paragraphs4.length) || !inserted && !removed) {
+      return;
+    }
+
+    // Make sure we have current ranges for computing paragraph index/starts.
+    // (Uses current `this.text`, i.e. text *before* the change.)
+    this.__syncParagraphsWithText();
+    const ranges = this.__paragraphRanges;
+    const currentParagraphIndex = this.getParagraphIndexAtChar(charIndex);
+    const currentParagraph = this.paragraphs[currentParagraphIndex];
+    const currentRange = ranges[currentParagraphIndex];
+    if (!currentParagraph || !currentRange) {
+      return;
+    }
+
+    // At paragraph start (cursor === first char), Enter should create an empty paragraph
+    // above, inheriting the current paragraph style.
+    const isAtParagraphStart = charIndex === currentRange.startChar;
+    const insertAt = isAtParagraphStart ? currentParagraphIndex : currentParagraphIndex + 1;
+    const inheritedStyle = currentParagraph.style ? {
+      ...currentParagraph.style
+    } : undefined;
+    if (removed > 0) {
+      // Removing hard newlines merges paragraphs. The typical edit operation removes `\n`
+      // between the "current" paragraph and subsequent paragraphs. So we remove the
+      // paragraph objects that would be merged into the current one.
+      //
+      // Note: this is a best-effort mapping based on the character position where the
+      // removal occurs. It keeps styles stable for typical backspace/delete scenarios.
+      const removeAt = currentParagraphIndex + 1;
+      this.paragraphs.splice(removeAt, removed);
+    }
+    if (inserted > 0) {
+      const toInsert = [];
+      for (let i = 0; i < inserted; i++) {
+        toInsert.push({
+          id: `paragraph_${uid()}`,
+          ...(inheritedStyle ? {
+            style: {
+              ...inheritedStyle
+            }
+          } : {})
+        });
+      }
+      this.paragraphs.splice(insertAt, 0, ...toInsert);
+    }
+  }
+  getParagraphIndexAtChar(charIndex) {
+    // Most callers pass a cursor position which can be:
+    // - within a paragraph range
+    // - exactly on a hard newline char (between paragraphs)
+    // - at the end-of-text position (after the last char)
+    for (let i = 0; i < this.__paragraphRanges.length; i++) {
+      const range = this.__paragraphRanges[i];
+      if (range.endChar < range.startChar && charIndex === range.startChar) {
+        return i;
+      }
+      if (charIndex >= range.startChar && charIndex <= range.endChar) {
+        return i;
+      }
+
+      // Treat the hard newline character between paragraphs as belonging to the
+      // paragraph above it.
+      if (i < this.__paragraphRanges.length - 1 && charIndex === range.endChar + 1) {
+        return i;
+      }
+    }
+
+    // If charIndex is beyond all ranges (e.g. cursor at end of text), return last.
+    return Math.max(0, this.__paragraphRanges.length - 1);
+  }
+  setParagraphStyle(paragraphIndex, patch) {
+    var _this$paragraphs5;
+    this.__syncParagraphsWithText();
+    const paragraph = (_this$paragraphs5 = this.paragraphs) === null || _this$paragraphs5 === void 0 ? void 0 : _this$paragraphs5[paragraphIndex];
+    if (!paragraph) {
+      return;
+    }
+    paragraph.style = {
+      ...paragraph.style,
+      ...patch
+    };
+    this.initDimensions();
+    this.setCoords();
+    this.dirty = true;
+  }
+  __rebuildLineMetaAfterWrap() {
+    const lines = this._textLines || [];
+    const ranges = this.__paragraphRanges || [];
+    const graphemeText = this._text || [];
+    this.__lineMeta = [];
+    let charIndex = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const lineLength = lines[i].length;
+      const startChar = charIndex;
+      const endChar = lineLength > 0 ? startChar + lineLength - 1 : startChar;
+      const nextCharIndex = startChar + lineLength;
+      const isHardBreakEnd = nextCharIndex >= 0 && nextCharIndex < graphemeText.length && graphemeText[nextCharIndex] === '\n';
+      const paragraphIndex = this.getParagraphIndexAtChar(startChar);
+      const paragraphRange = ranges[paragraphIndex];
+      const isLastLineOfParagraph = isHardBreakEnd || paragraphRange && endChar === paragraphRange.endChar;
+      this.__lineMeta.push({
+        paragraphIndex,
+        startChar,
+        endChar,
+        isHardBreakEnd,
+        isLastLineOfParagraph
+      });
+      charIndex += lineLength + (isHardBreakEnd ? 1 : 0);
     }
   }
 
@@ -20257,33 +20452,28 @@ class FabricText extends StyledText {
    * @return {Number} Line left offset
    */
   _getLineLeftOffset(lineIndex) {
-    const lineWidth = this.getLineWidth(lineIndex),
-      lineDiff = this.width - lineWidth,
-      textAlign = this.textAlign,
-      direction = this.direction,
-      isEndOfWrapping = this.isEndOfWrapping(lineIndex);
-    let leftOffset = 0;
-    if (textAlign === JUSTIFY || textAlign === JUSTIFY_CENTER && !isEndOfWrapping || textAlign === JUSTIFY_RIGHT && !isEndOfWrapping || textAlign === JUSTIFY_LEFT && !isEndOfWrapping) {
+    const lineWidth = this.getLineWidth(lineIndex);
+    const lineDiff = this.width - lineWidth;
+    const effectiveAlign = this.__getEffectiveAlignForLine(lineIndex);
+    const isEndOfWrapping = this.isEndOfWrapping(lineIndex);
+    const direction = this.direction;
+
+    // justify variants: offset is 0 (do not change justify behavior beyond this)
+    if (effectiveAlign === JUSTIFY || effectiveAlign === JUSTIFY_CENTER && !isEndOfWrapping || effectiveAlign === JUSTIFY_RIGHT && !isEndOfWrapping || effectiveAlign === JUSTIFY_LEFT && !isEndOfWrapping) {
       return 0;
     }
-    if (textAlign === CENTER) {
+    let leftOffset = 0;
+    if (effectiveAlign === CENTER || effectiveAlign === JUSTIFY_CENTER) {
       leftOffset = lineDiff / 2;
-    }
-    if (textAlign === RIGHT) {
-      leftOffset = lineDiff;
-    }
-    if (textAlign === JUSTIFY_CENTER) {
-      leftOffset = lineDiff / 2;
-    }
-    if (textAlign === JUSTIFY_RIGHT) {
+    } else if (effectiveAlign === RIGHT || effectiveAlign === JUSTIFY_RIGHT) {
       leftOffset = lineDiff;
     }
     if (direction === RTL) {
-      if (textAlign === RIGHT || textAlign === JUSTIFY_RIGHT) {
+      if (effectiveAlign === RIGHT || effectiveAlign === JUSTIFY_RIGHT) {
         leftOffset = 0;
-      } else if (textAlign === LEFT || textAlign === JUSTIFY_LEFT) {
+      } else if (effectiveAlign === LEFT || effectiveAlign === JUSTIFY_LEFT) {
         leftOffset = -lineDiff;
-      } else if (textAlign === CENTER || textAlign === JUSTIFY_CENTER) {
+      } else if (effectiveAlign === CENTER || effectiveAlign === JUSTIFY_CENTER) {
         leftOffset = -lineDiff / 2;
       }
     }
@@ -20498,10 +20688,21 @@ class FabricText extends StyledText {
    * @return {Object} Object representation of an instance
    */
   toObject() {
+    var _this$paragraphs6;
     let propertiesToInclude = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : [];
     return {
       ...super.toObject([...additionalProps, ...propertiesToInclude]),
       styles: stylesToArray(this.styles, this.text),
+      ...((_this$paragraphs6 = this.paragraphs) !== null && _this$paragraphs6 !== void 0 && _this$paragraphs6.length ? {
+        paragraphs: this.paragraphs.map(paragraph => ({
+          ...paragraph,
+          ...(paragraph.style ? {
+            style: {
+              ...paragraph.style
+            }
+          } : {})
+        }))
+      } : {}),
       ...(this.path ? {
         path: this.path.toObject()
       } : {})
@@ -20618,9 +20819,11 @@ class FabricText extends StyledText {
    * @returns {Promise<FabricText>}
    */
   static fromObject(object) {
+    var _object$paragraphs;
     return this._fromObject({
       ...object,
-      styles: stylesFromArray(object.styles || {}, object.text)
+      styles: stylesFromArray(object.styles || {}, object.text),
+      paragraphs: (_object$paragraphs = object.paragraphs) !== null && _object$paragraphs !== void 0 ? _object$paragraphs : []
     }, {
       extraParam: 'text'
     });
@@ -21844,7 +22047,20 @@ class ITextBehavior extends FabricText {
    * @param {Number} end default to start + 1
    */
   removeChars(start) {
+    var _this$paragraphs;
     let end = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : start + 1;
+    // Keep paragraph metadata stable across hard newline removals.
+    if ((_this$paragraphs = this.paragraphs) !== null && _this$paragraphs !== void 0 && _this$paragraphs.length) {
+      const removedText = this._text.slice(start, end);
+      const removedNewlines = removedText.filter(t => t === '\n').length;
+      if (removedNewlines) {
+        this.__syncParagraphsForHardNewlineChange({
+          charIndex: start,
+          inserted: 0,
+          removed: removedNewlines
+        });
+      }
+    }
     this.removeStyleFromTo(start, end);
     this._text.splice(start, end - start);
     this.text = this._text.join('');
@@ -21867,7 +22083,21 @@ class ITextBehavior extends FabricText {
    * @param {Number} end default to start + 1
    */
   insertChars(text, style, start) {
+    var _this$paragraphs2;
     let end = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : start;
+    // Keep paragraph metadata stable across hard newline insertions/removals.
+    // (Uses the pre-change text/ranges to decide which paragraph is being split/joined.)
+    if ((_this$paragraphs2 = this.paragraphs) !== null && _this$paragraphs2 !== void 0 && _this$paragraphs2.length) {
+      const insertedNewlines = this.graphemeSplit(text).filter(t => t === '\n').length;
+      const removedNewlines = this._text.slice(start, end).filter(t => t === '\n').length;
+      if (insertedNewlines || removedNewlines) {
+        this.__syncParagraphsForHardNewlineChange({
+          charIndex: start,
+          inserted: insertedNewlines,
+          removed: removedNewlines
+        });
+      }
+    }
     if (end > start) {
       this.removeStyleFromTo(start, end);
     }
@@ -22049,6 +22279,7 @@ class ITextKeyBehavior extends ITextBehavior {
    * @param {Event} e Event object
    */
   onInput(e) {
+    var _this$paragraphs2;
     const fromPaste = this.fromPaste;
     const {
       value,
@@ -22101,6 +22332,7 @@ class ITextKeyBehavior extends ITextBehavior {
     }
     const insertedText = nextText.slice(textareaSelection.selectionEnd - charDiff, textareaSelection.selectionEnd);
     if (removedText && removedText.length) {
+      var _this$paragraphs;
       if (insertedText.length) {
         // let's copy some style before deleting.
         // we want to copy the style before the cursor OR the style at the cursor if selection
@@ -22123,7 +22355,32 @@ class ITextKeyBehavior extends ITextBehavior {
         removeFrom = _selectionEnd;
         removeTo = _selectionEnd + removedText.length;
       }
+
+      // Keep paragraph metadata stable across hard newline insert/remove.
+      // This prevents paragraph styles from effectively sticking to indices.
+      if ((_this$paragraphs = this.paragraphs) !== null && _this$paragraphs !== void 0 && _this$paragraphs.length) {
+        const insertedNewlines = insertedText.filter(t => t === '\n').length;
+        const removedNewlines = removedText.filter(t => t === '\n').length;
+        if (insertedNewlines || removedNewlines) {
+          this.__syncParagraphsForHardNewlineChange({
+            charIndex: removeFrom,
+            inserted: insertedNewlines,
+            removed: removedNewlines
+          });
+        }
+      }
       this.removeStyleFromTo(removeFrom, removeTo);
+    }
+    // Insert-only path (no deletions)
+    else if ((_this$paragraphs2 = this.paragraphs) !== null && _this$paragraphs2 !== void 0 && _this$paragraphs2.length && insertedText.length) {
+      const insertedNewlines = insertedText.filter(t => t === '\n').length;
+      if (insertedNewlines) {
+        this.__syncParagraphsForHardNewlineChange({
+          charIndex: _selectionStart,
+          inserted: insertedNewlines,
+          removed: 0
+        });
+      }
     }
     if (insertedText.length) {
       const {
@@ -23474,10 +23731,14 @@ class Textbox extends IText {
    * @override
    */
   initDimensions() {
+    var _this$paragraphs, _this$paragraphs2;
     if (!this.initialized) {
       return;
     }
     this.isEditing && this.initDelayedCursor();
+    if ((_this$paragraphs = this.paragraphs) !== null && _this$paragraphs !== void 0 && _this$paragraphs.length) {
+      this.__syncParagraphsWithText();
+    }
     this._clearCache();
     // clear dynamicMinWidth as it will be different after we re-wrap line
     this.dynamicMinWidth = 0;
@@ -23487,12 +23748,142 @@ class Textbox extends IText {
     if (this.dynamicMinWidth > this.width) {
       this._set('width', this.dynamicMinWidth);
     }
-    if (this.textAlign.includes(JUSTIFY)) {
-      // once text is measured we need to make space fatter to make justified text.
-      this.enlargeSpaces();
-    }
     // clear cache and re-calculate height
     this.height = this.calcTextHeight();
+    if ((_this$paragraphs2 = this.paragraphs) !== null && _this$paragraphs2 !== void 0 && _this$paragraphs2.length) {
+      this.__rebuildLineMetaAfterWrap();
+    }
+
+    // Textbox-only: per-paragraph justify space expansion.
+    // Keep non-justify behavior unchanged.
+    this.__expandSpacesForJustifyLines();
+  }
+
+  /**
+   * A visual line is eligible for space expansion if:
+   * - effectiveAlign is a justify variant
+   * - not end of wrapping
+   * - not last line of paragraph
+   */
+  __isLineEligibleForSpaceExpansion(lineIndex) {
+    var _this$__lineMeta;
+    const effectiveAlign = this.__getEffectiveAlignForLine(lineIndex);
+    if (effectiveAlign !== JUSTIFY && effectiveAlign !== JUSTIFY_LEFT && effectiveAlign !== JUSTIFY_CENTER && effectiveAlign !== JUSTIFY_RIGHT) {
+      return false;
+    }
+    if (this.isEndOfWrapping(lineIndex)) {
+      return false;
+    }
+    if ((_this$__lineMeta = this.__lineMeta) !== null && _this$__lineMeta !== void 0 && (_this$__lineMeta = _this$__lineMeta[lineIndex]) !== null && _this$__lineMeta !== void 0 && _this$__lineMeta.isLastLineOfParagraph) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Expand spaces/tabs for eligible justify lines.
+   *
+   * This adjusts the internal per-char bounds (`__charBounds`) so that rendering
+   * positions reflect the extra distributed width.
+   */
+  __expandSpacesForJustifyLines() {
+    for (let i = 0, len = this._textLines.length; i < len; i++) {
+      var _this$__charBounds;
+      if (!this.__isLineEligibleForSpaceExpansion(i)) {
+        continue;
+      }
+      const lineWidth = this.getLineWidth(i);
+      const lineDiff = this.width - lineWidth;
+      if (lineDiff <= 0) {
+        continue;
+      }
+      const line = this._textLines[i];
+
+      // Identify *inter-word gaps*: runs of spaces/tabs that are between two
+      // non-space characters.
+      const gaps = [];
+      let sawNonSpaceOnLeft = false;
+      let gapStart = -1;
+      for (let j = 0; j < line.length; j++) {
+        const isSpace = this._reSpaceAndTab.test(line[j]);
+        if (isSpace) {
+          if (sawNonSpaceOnLeft && gapStart === -1) {
+            gapStart = j;
+          }
+          continue;
+        }
+
+        // Non-space
+        if (gapStart !== -1) {
+          // We just closed a gap because we found the right-side word.
+          gaps.push({
+            start: gapStart,
+            end: j - 1,
+            count: j - gapStart
+          });
+          gapStart = -1;
+        }
+        sawNonSpaceOnLeft = true;
+      }
+
+      // trailing spaces are not inter-word gaps (no right-side word)
+
+      if (gaps.length === 0) {
+        continue;
+      }
+
+      // Float distribution: consistent total equals lineDiff.
+      const perGap = lineDiff / gaps.length;
+      const spaceExtraByCharIndex = new Array(line.length).fill(0);
+      for (let g = 0; g < gaps.length; g++) {
+        const gap = gaps[g];
+        const perSpaceExtra = perGap / gap.count;
+        for (let j = gap.start; j <= gap.end; j++) {
+          spaceExtraByCharIndex[j] = perSpaceExtra;
+        }
+      }
+
+      // Apply expansion like FabricText.enlargeSpaces() but only for the
+      // spaces that are part of inter-word gaps.
+      let accumulatedSpace = 0;
+      const charBoundsLine = (_this$__charBounds = this.__charBounds) === null || _this$__charBounds === void 0 ? void 0 : _this$__charBounds[i];
+      if (!charBoundsLine) {
+        continue;
+      }
+      for (let j = 0; j <= line.length; j++) {
+        const extra = j < line.length ? spaceExtraByCharIndex[j] : 0;
+        const charBound = charBoundsLine[j];
+        if (charBound) {
+          if (extra > 0) {
+            charBound.width += extra;
+            charBound.kernedWidth += extra;
+          }
+
+          // Only apply left shift when bounds exist.
+          // Always accumulate shift regardless (see below).
+          charBound.left += accumulatedSpace;
+        }
+
+        // Always accumulate even if a bound slot is missing.
+        accumulatedSpace += extra;
+      }
+
+      // Keep cached line width coherent and avoid re-measuring (which would
+      // overwrite modified char bounds).
+      this.__lineWidths[i] = this.width;
+    }
+  }
+  __rebuildLineMetaAfterWrap() {
+    super.__rebuildLineMetaAfterWrap();
+    if (!this._styleMap) {
+      return;
+    }
+    for (let i = 0; i < this.__lineMeta.length; i++) {
+      const map = this._styleMap[i];
+      if (map) {
+        this.__lineMeta[i].paragraphIndex = map.line;
+      }
+    }
   }
 
   /**
