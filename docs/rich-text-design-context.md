@@ -1,21 +1,3 @@
-Perfect — this is exactly the right moment to **freeze context into a durable design document** and then hand **Codex precise, mechanical instructions** for PR-1.
-
-Below are **two deliverables**:
-
----
-
-# 📄 Deliverable 1: Reference Design Document (GitHub-ready)
-
-You can save the following verbatim as something like:
-
-```
-docs/rich-text-design-context.md
-```
-
-This document captures **intent, constraints, architecture, and PR sequencing** so future contributors (or future-you) don’t need this chat context.
-
----
-
 ## Rich Text Paragraph Support for Fabric.js
 
 **Design Context & Development Plan**
@@ -213,7 +195,9 @@ All paragraph logic flows through cached metadata, never ad-hoc string parsing.
 
 ---
 
-# 🔧 Deliverable 2: PR-1 Diff Outline & Codex Instructions
+---
+
+## PR-1 Diff Outline & Codex Instructions
 
 This is the **exact instruction set you can paste into Codex** to implement PR-1 safely.
 
