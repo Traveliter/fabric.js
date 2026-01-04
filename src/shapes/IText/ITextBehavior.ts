@@ -1038,6 +1038,18 @@ export abstract class ITextBehavior<
    * @param {Number} end default to start + 1
    */
   removeChars(start: number, end: number = start + 1) {
+    // Keep paragraph metadata stable across hard newline removals.
+    if (this.paragraphs?.length) {
+      const removedText = this._text.slice(start, end);
+      const removedNewlines = removedText.filter((t) => t === '\n').length;
+      if (removedNewlines) {
+        this.__syncParagraphsForHardNewlineChange({
+          charIndex: start,
+          inserted: 0,
+          removed: removedNewlines,
+        });
+      }
+    }
     this.removeStyleFromTo(start, end);
     this._text.splice(start, end - start);
     this.text = this._text.join('');
@@ -1065,6 +1077,23 @@ export abstract class ITextBehavior<
     start: number,
     end: number = start,
   ) {
+    // Keep paragraph metadata stable across hard newline insertions/removals.
+    // (Uses the pre-change text/ranges to decide which paragraph is being split/joined.)
+    if (this.paragraphs?.length) {
+      const insertedNewlines = this.graphemeSplit(text).filter(
+        (t) => t === '\n',
+      ).length;
+      const removedNewlines = this._text
+        .slice(start, end)
+        .filter((t) => t === '\n').length;
+      if (insertedNewlines || removedNewlines) {
+        this.__syncParagraphsForHardNewlineChange({
+          charIndex: start,
+          inserted: insertedNewlines,
+          removed: removedNewlines,
+        });
+      }
+    }
     if (end > start) {
       this.removeStyleFromTo(start, end);
     }

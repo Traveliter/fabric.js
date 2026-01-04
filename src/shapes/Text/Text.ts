@@ -568,7 +568,79 @@ export class FabricText<
     }
   }
 
+  /**
+   * Keep `this.paragraphs` in sync with an insertion/removal of hard newlines.
+   *
+   * `__syncParagraphsWithText()` mostly syncs by count/order. When a newline is inserted
+   * in the middle of the text, paragraph styles would otherwise effectively stick to
+   * paragraph indices and appear to jump.
+   *
+   * Expected behavior:
+   * - inserting a newline that splits a paragraph creates a new paragraph that inherits
+   *   the style of the paragraph being split.
+   * - removing a newline that joins paragraphs removes the paragraph(s) that got joined.
+   */
+  protected __syncParagraphsForHardNewlineChange(params: {
+    charIndex: number;
+    inserted: number;
+    removed: number;
+  }): void {
+    const { charIndex, inserted, removed } = params;
+    if (!this.paragraphs?.length || (!inserted && !removed)) {
+      return;
+    }
+
+    // Make sure we have current ranges for computing paragraph index/starts.
+    // (Uses current `this.text`, i.e. text *before* the change.)
+    this.__syncParagraphsWithText();
+
+    const ranges = this.__paragraphRanges;
+    const currentParagraphIndex = this.getParagraphIndexAtChar(charIndex);
+    const currentParagraph = this.paragraphs[currentParagraphIndex];
+    const currentRange = ranges[currentParagraphIndex];
+    if (!currentParagraph || !currentRange) {
+      return;
+    }
+
+    // At paragraph start (cursor === first char), Enter should create an empty paragraph
+    // above, inheriting the current paragraph style.
+    const isAtParagraphStart = charIndex === currentRange.startChar;
+    const insertAt = isAtParagraphStart
+      ? currentParagraphIndex
+      : currentParagraphIndex + 1;
+
+    const inheritedStyle = currentParagraph.style
+      ? { ...currentParagraph.style }
+      : undefined;
+
+    if (removed > 0) {
+      // Removing hard newlines merges paragraphs. The typical edit operation removes `\n`
+      // between the "current" paragraph and subsequent paragraphs. So we remove the
+      // paragraph objects that would be merged into the current one.
+      //
+      // Note: this is a best-effort mapping based on the character position where the
+      // removal occurs. It keeps styles stable for typical backspace/delete scenarios.
+      const removeAt = currentParagraphIndex + 1;
+      this.paragraphs.splice(removeAt, removed);
+    }
+
+    if (inserted > 0) {
+      const toInsert: Paragraph[] = [];
+      for (let i = 0; i < inserted; i++) {
+        toInsert.push({
+          id: `paragraph_${uid()}`,
+          ...(inheritedStyle ? { style: { ...inheritedStyle } } : {}),
+        });
+      }
+      this.paragraphs.splice(insertAt, 0, ...toInsert);
+    }
+  }
+
   getParagraphIndexAtChar(charIndex: number): number {
+    // Most callers pass a cursor position which can be:
+    // - within a paragraph range
+    // - exactly on a hard newline char (between paragraphs)
+    // - at the end-of-text position (after the last char)
     for (let i = 0; i < this.__paragraphRanges.length; i++) {
       const range = this.__paragraphRanges[i];
       if (range.endChar < range.startChar && charIndex === range.startChar) {
@@ -577,8 +649,19 @@ export class FabricText<
       if (charIndex >= range.startChar && charIndex <= range.endChar) {
         return i;
       }
+
+      // Treat the hard newline character between paragraphs as belonging to the
+      // paragraph above it.
+      if (
+        i < this.__paragraphRanges.length - 1 &&
+        charIndex === range.endChar + 1
+      ) {
+        return i;
+      }
     }
-    return 0;
+
+    // If charIndex is beyond all ranges (e.g. cursor at end of text), return last.
+    return Math.max(0, this.__paragraphRanges.length - 1);
   }
 
   setParagraphStyle(
@@ -1639,7 +1722,10 @@ export class FabricText<
         leftOffset = 0;
       } else if (effectiveAlign === LEFT || effectiveAlign === JUSTIFY_LEFT) {
         leftOffset = -lineDiff;
-      } else if (effectiveAlign === CENTER || effectiveAlign === JUSTIFY_CENTER) {
+      } else if (
+        effectiveAlign === CENTER ||
+        effectiveAlign === JUSTIFY_CENTER
+      ) {
         leftOffset = -lineDiff / 2;
       }
     }

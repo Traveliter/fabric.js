@@ -258,7 +258,33 @@ export abstract class ITextKeyBehavior<
         removeFrom = _selectionEnd;
         removeTo = _selectionEnd + removedText.length;
       }
+
+      // Keep paragraph metadata stable across hard newline insert/remove.
+      // This prevents paragraph styles from effectively sticking to indices.
+      if (this.paragraphs?.length) {
+        const insertedNewlines = insertedText.filter((t) => t === '\n').length;
+        const removedNewlines = removedText.filter((t) => t === '\n').length;
+        if (insertedNewlines || removedNewlines) {
+          this.__syncParagraphsForHardNewlineChange({
+            charIndex: removeFrom,
+            inserted: insertedNewlines,
+            removed: removedNewlines,
+          });
+        }
+      }
+
       this.removeStyleFromTo(removeFrom, removeTo);
+    }
+    // Insert-only path (no deletions)
+    else if (this.paragraphs?.length && insertedText.length) {
+      const insertedNewlines = insertedText.filter((t) => t === '\n').length;
+      if (insertedNewlines) {
+        this.__syncParagraphsForHardNewlineChange({
+          charIndex: _selectionStart,
+          inserted: insertedNewlines,
+          removed: 0,
+        });
+      }
     }
     if (insertedText.length) {
       const { copyPasteData } = getEnv();
