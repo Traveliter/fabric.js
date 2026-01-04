@@ -2,7 +2,12 @@ import type { TClassProperties, TOptions } from '../typedefs';
 import { IText } from './IText/IText';
 import { classRegistry } from '../ClassRegistry';
 import { createTextboxDefaultControls } from '../controls/commonControls';
-import { JUSTIFY } from './Text/constants';
+import {
+  JUSTIFY,
+  JUSTIFY_CENTER,
+  JUSTIFY_LEFT,
+  JUSTIFY_RIGHT,
+} from './Text/constants';
 import type { TextStyleDeclaration } from './Text/StyledText';
 import type { SerializedITextProps, ITextProps } from './IText/IText';
 import type { ITextEvents } from './IText/ITextBehavior';
@@ -93,7 +98,7 @@ export class Textbox<
 
   static ownDefaults = textboxDefaultValues;
 
-  static getDefaults(): Record<string, any> {
+  static getDefaults(): Record<string, unknown> {
     return {
       ...super.getDefaults(),
       ...Textbox.ownDefaults,
@@ -141,14 +146,135 @@ export class Textbox<
     if (this.dynamicMinWidth > this.width) {
       this._set('width', this.dynamicMinWidth);
     }
-    if (this.textAlign.includes(JUSTIFY)) {
-      // once text is measured we need to make space fatter to make justified text.
-      this.enlargeSpaces();
-    }
     // clear cache and re-calculate height
     this.height = this.calcTextHeight();
     if (this.paragraphs?.length) {
       this.__rebuildLineMetaAfterWrap();
+    }
+
+    // Textbox-only: per-paragraph justify space expansion.
+    // Keep non-justify behavior unchanged.
+    this.__expandSpacesForJustifyLines();
+  }
+
+  /**
+   * A visual line is eligible for space expansion if:
+   * - effectiveAlign is a justify variant
+   * - not end of wrapping
+   * - not last line of paragraph
+   */
+  protected __isLineEligibleForSpaceExpansion(lineIndex: number): boolean {
+    const effectiveAlign = this.__getEffectiveAlignForLine(lineIndex);
+    if (
+      effectiveAlign !== JUSTIFY &&
+      effectiveAlign !== JUSTIFY_LEFT &&
+      effectiveAlign !== JUSTIFY_CENTER &&
+      effectiveAlign !== JUSTIFY_RIGHT
+    ) {
+      return false;
+    }
+    if (this.isEndOfWrapping(lineIndex)) {
+      return false;
+    }
+    if (this.__lineMeta?.[lineIndex]?.isLastLineOfParagraph) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Expand spaces/tabs for eligible justify lines.
+   *
+   * This adjusts the internal per-char bounds (`__charBounds`) so that rendering
+   * positions reflect the extra distributed width.
+   */
+  protected __expandSpacesForJustifyLines(): void {
+    for (let i = 0, len = this._textLines.length; i < len; i++) {
+      if (!this.__isLineEligibleForSpaceExpansion(i)) {
+        continue;
+      }
+
+      const lineWidth = this.getLineWidth(i);
+      const lineDiff = this.width - lineWidth;
+      if (lineDiff <= 0) {
+        continue;
+      }
+
+      const line = this._textLines[i];
+
+      // Identify *inter-word gaps*: runs of spaces/tabs that are between two
+      // non-space characters.
+      const gaps: Array<{ start: number; end: number; count: number }> = [];
+      let sawNonSpaceOnLeft = false;
+      let gapStart = -1;
+      for (let j = 0; j < line.length; j++) {
+        const isSpace = this._reSpaceAndTab.test(line[j]);
+        if (isSpace) {
+          if (sawNonSpaceOnLeft && gapStart === -1) {
+            gapStart = j;
+          }
+          continue;
+        }
+
+        // Non-space
+        if (gapStart !== -1) {
+          // We just closed a gap because we found the right-side word.
+          gaps.push({
+            start: gapStart,
+            end: j - 1,
+            count: j - gapStart,
+          });
+          gapStart = -1;
+        }
+        sawNonSpaceOnLeft = true;
+      }
+
+      // trailing spaces are not inter-word gaps (no right-side word)
+
+      if (gaps.length === 0) {
+        continue;
+      }
+
+      // Float distribution: consistent total equals lineDiff.
+      const perGap = lineDiff / gaps.length;
+
+      const spaceExtraByCharIndex = new Array<number>(line.length).fill(0);
+      for (let g = 0; g < gaps.length; g++) {
+        const gap = gaps[g];
+        const perSpaceExtra = perGap / gap.count;
+        for (let j = gap.start; j <= gap.end; j++) {
+          spaceExtraByCharIndex[j] = perSpaceExtra;
+        }
+      }
+
+      // Apply expansion like FabricText.enlargeSpaces() but only for the
+      // spaces that are part of inter-word gaps.
+      let accumulatedSpace = 0;
+      const charBoundsLine = this.__charBounds?.[i];
+      if (!charBoundsLine) {
+        continue;
+      }
+      for (let j = 0; j <= line.length; j++) {
+        const extra = j < line.length ? spaceExtraByCharIndex[j] : 0;
+        const charBound = charBoundsLine[j];
+        if (charBound) {
+          if (extra > 0) {
+            charBound.width += extra;
+            charBound.kernedWidth += extra;
+          }
+
+          // Only apply left shift when bounds exist.
+          // Always accumulate shift regardless (see below).
+          charBound.left += accumulatedSpace;
+        }
+
+        // Always accumulate even if a bound slot is missing.
+        accumulatedSpace += extra;
+      }
+
+      // Keep cached line width coherent and avoid re-measuring (which would
+      // overwrite modified char bounds).
+      this.__lineWidths[i] = this.width;
     }
   }
 

@@ -24,13 +24,18 @@ export function sanitizeSVG(value: string) {
 }
 
 function looksLikeFabricObject(val: unknown): val is FabricObject {
+  const maybe = val as {
+    toObject?: unknown;
+    render?: unknown;
+    constructor?: { type?: unknown };
+  };
   return (
     !!val &&
     typeof val === 'object' &&
     // all FabricObjects implement these three members
-    typeof (val as any).toObject === 'function' &&
-    typeof (val as any).render === 'function' &&
-    typeof (val as any).constructor?.type === 'string'
+    typeof maybe.toObject === 'function' &&
+    typeof maybe.render === 'function' &&
+    typeof maybe.constructor?.type === 'string'
   );
 }
 
@@ -46,7 +51,11 @@ export const roundSnapshotOptions = {
   },
 };
 
-const rawToMatchSnapshot = (chai.Assertion.prototype as any).toMatchSnapshot;
+const rawToMatchSnapshot = (
+  chai.Assertion.prototype as unknown as {
+    toMatchSnapshot: (...args: unknown[]) => unknown;
+  }
+).toMatchSnapshot;
 
 chai.util.addMethod(
   chai.Assertion.prototype,
@@ -73,7 +82,13 @@ chai.util.addMethod(
     delete snap.version;
 
     const value = cloneDeepWith(snap, (v, k, obj, stack) => {
-      const c = customiser?.(v, k, obj, stack);
+      // NOTE: In some typecheck pipelines (e.g. `tsc-files` used by pre-commit),
+      // `ObjectOptions.cloneDeepWith` can be inferred as `never`. Runtime-wise
+      // it can still be a function.
+      const c =
+        typeof customiser === 'function'
+          ? (customiser as (...args: unknown[]) => unknown)(v, k, obj, stack)
+          : undefined;
       if (c !== undefined) return c;
       if (k === 'width') return Math.round(v as number);
     });

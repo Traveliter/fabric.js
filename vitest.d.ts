@@ -4,18 +4,29 @@ import type { TMat2D } from './src/typedefs';
 import type { cloneDeepWith } from 'es-toolkit/compat';
 import type { FabricImage } from './src/shapes/Image';
 
-type ObjectOptions<T = unknown> = ExtendedOptions<T> & {
+type ExtendedOptions = {
+  // NOTE:
+  // `es-toolkit/compat`'s `cloneDeepWith` is not modeled as a generic function in
+  // a way that supports instantiation expressions (`typeof fn<T>`). Using
+  // `typeof cloneDeepWith<T>` can collapse to `never` under `tsc-files`, which
+  // then breaks callers (e.g. `customiser?.(...)` becomes "not callable").
+  //
+  // We only need the runtime signature here, so we take the second parameter
+  // type from the non-instantiated function.
+  cloneDeepWith?: Parameters<typeof cloneDeepWith>[1];
+} & object;
+
+type ObjectOptions = ExtendedOptions & {
   includeDefaultValues?: boolean;
 };
 
-type ExtendedOptions<T = unknown> = {
-  cloneDeepWith?: Parameters<typeof cloneDeepWith<T>>[1];
-} & object;
+interface CustomMatchers<R = unknown> {
+  toMatchSnapshot(
+    propertiesOrHint?: ExtendedOptions | string,
+    hint?: string,
+  ): R;
 
-interface CustomMatchers<R = unknown, T = unknown> {
-  toMatchSnapshot(propertiesOrHint?: ExtendedOptions<T>, hint?: string): R;
-
-  toMatchObjectSnapshot(propertiesOrHint?: ObjectOptions<T>, hint?: string): R;
+  toMatchObjectSnapshot(propertiesOrHint?: ObjectOptions, hint?: string): R;
 
   toMatchSVGSnapshot(hint?: string): R;
 
@@ -27,6 +38,6 @@ interface CustomMatchers<R = unknown, T = unknown> {
 }
 
 declare module 'vitest' {
-  interface Assertion<T = any> extends CustomMatchers<T> {}
+  interface Assertion<T = unknown> extends CustomMatchers<T> {}
   interface AsymmetricMatchersContaining extends CustomMatchers {}
 }

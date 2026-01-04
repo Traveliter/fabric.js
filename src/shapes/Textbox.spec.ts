@@ -898,7 +898,7 @@ describe('Textbox', () => {
 
   it('_deleteStyleDeclaration', () => {
     const text = 'aaa aaq ggg gg oee eee';
-    const styles: Record<PropertyKey, any> = {};
+    const styles: Record<number, { fontSize: number }> = {};
 
     for (let index = 0; index < text.length; index++) {
       styles[index] = { fontSize: 4 };
@@ -922,7 +922,7 @@ describe('Textbox', () => {
 
   it('_setStyleDeclaration', () => {
     const text = 'aaa aaq ggg gg oee eee';
-    const styles: Record<PropertyKey, any> = {};
+    const styles: Record<number, { fontSize: number }> = {};
 
     for (let index = 0; index < text.length; index++) {
       styles[index] = { fontSize: 4 };
@@ -992,5 +992,118 @@ describe('Textbox', () => {
     expect(newTextbox.textLines.length, 'The same text is not wrapped').toBe(
       measureTextbox.textLines.length,
     );
+  });
+
+  it('expands spaces on eligible justified lines', () => {
+    const text = 'aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq';
+    const justify = new Textbox(text, {
+      width: 140,
+      textAlign: 'justify',
+    });
+    const left = new Textbox(text, {
+      width: 140,
+      textAlign: 'left',
+    });
+
+    // line 0 should be a wrapped line (not end-of-wrapping)
+    const lineIndex = 0;
+    expect(justify.isEndOfWrapping(lineIndex)).toBe(false);
+
+    // Force measurement to populate __charBounds for both instances.
+    justify.getLineWidth(lineIndex);
+    left.getLineWidth(lineIndex);
+
+    type TextboxInternals = {
+      _textLines: string[][];
+      _reSpaceAndTab: RegExp;
+      __charBounds: Array<Array<{ width: number }>>;
+    };
+
+    const jAny = justify as unknown as TextboxInternals;
+    const lAny = left as unknown as TextboxInternals;
+
+    const jLine = jAny._textLines[lineIndex];
+    const lLine = lAny._textLines[lineIndex];
+    const jSpaceIndex = jLine.findIndex((ch) => jAny._reSpaceAndTab.test(ch));
+    const lSpaceIndex = lLine.findIndex((ch) => lAny._reSpaceAndTab.test(ch));
+    expect(jSpaceIndex).toBeGreaterThanOrEqual(0);
+    expect(lSpaceIndex).toBeGreaterThanOrEqual(0);
+
+    const justifySpaceWidth = jAny.__charBounds[lineIndex][jSpaceIndex].width;
+    const leftSpaceWidth = lAny.__charBounds[lineIndex][lSpaceIndex].width;
+
+    // Justify should expand at least one inter-word whitespace.
+    expect(justifySpaceWidth).toBeGreaterThan(leftSpaceWidth);
+    // Eligible justified lines should expand to fill the textbox width.
+    expect(justify.getLineWidth(lineIndex)).toBeCloseTo(justify.width);
+  });
+
+  it('does not expand on last visual line of paragraph', () => {
+    const textbox = new Textbox('aa bb cc\ndd ee ff', {
+      width: 200,
+      textAlign: 'justify',
+      paragraphs: [
+        { id: 'p0', style: { align: 'justify' } },
+        { id: 'p1', style: { align: 'justify' } },
+      ],
+    });
+
+    const tAny = textbox as unknown as {
+      __lineMeta?: Array<{ isLastLineOfParagraph: boolean }>;
+    };
+    // With hard newline, line 0 is the last visual line of paragraph 0.
+    expect(tAny.__lineMeta?.[0]?.isLastLineOfParagraph).toBe(true);
+
+    const line0Width = textbox.getLineWidth(0);
+    // Should not have been expanded to full width.
+    expect(line0Width).toBeLessThan(textbox.width);
+  });
+
+  it('mixed paragraph alignment only expands justify paragraph', () => {
+    const textbox = new Textbox(
+      'aa bb cc dd ee ff gg hh ii jj kk ll\nmm nn oo pp qq rr ss tt uu vv ww xx',
+      {
+        width: 140,
+        textAlign: 'left',
+        paragraphs: [
+          { id: 'p0', style: { align: 'justify' } },
+          { id: 'p1', style: { align: 'left' } },
+        ],
+      },
+    );
+
+    const tAny = textbox as unknown as {
+      _textLines: string[][];
+      __lineMeta?: Array<{
+        paragraphIndex: number;
+        isLastLineOfParagraph: boolean;
+      }>;
+    };
+    const lineCount = tAny._textLines.length;
+
+    const findEligibleLineInParagraph = (paragraphIndex: number) => {
+      for (let i = 0; i < lineCount; i++) {
+        if (tAny.__lineMeta?.[i]?.paragraphIndex !== paragraphIndex) {
+          continue;
+        }
+        if (textbox.isEndOfWrapping(i)) {
+          continue;
+        }
+        if (tAny.__lineMeta?.[i]?.isLastLineOfParagraph) {
+          continue;
+        }
+        return i;
+      }
+      return -1;
+    };
+
+    const justifyLine = findEligibleLineInParagraph(0);
+    expect(justifyLine).toBeGreaterThanOrEqual(0);
+    expect(textbox.getLineWidth(justifyLine)).toBeCloseTo(textbox.width);
+
+    // Paragraph 1 is left aligned, so its lines must not be expanded.
+    const leftLine = findEligibleLineInParagraph(1);
+    expect(leftLine).toBeGreaterThanOrEqual(0);
+    expect(textbox.getLineWidth(leftLine)).toBeLessThan(textbox.width - 0.5);
   });
 });
