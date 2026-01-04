@@ -120,6 +120,26 @@ describe('Textbox', () => {
     expect(textbox.width, 'width is taken by contstructor').toBe(400);
   });
 
+  it('uses paragraph alignment to compute line offsets', () => {
+    const textbox = new Textbox('AAAA\nBBBB', {
+      width: 300,
+      textAlign: 'left',
+    });
+    textbox.initDimensions();
+    textbox.setParagraphStyle(0, { align: 'center' });
+    textbox.setParagraphStyle(1, { align: 'right' });
+
+    const line0Width = textbox.getLineWidth(0);
+    const line1Width = textbox.getLineWidth(1);
+    const line0Offset = textbox._getLineLeftOffset(0);
+    const line1Offset = textbox._getLineLeftOffset(1);
+
+    expect(line0Offset).toBeCloseTo((textbox.width - line0Width) / 2);
+    expect(line1Offset).toBeCloseTo(textbox.width - line1Width);
+    expect(line0Offset).not.toBeCloseTo(0);
+    expect(line1Offset).not.toBeCloseTo(0);
+  });
+
   it('constructor with width too small', () => {
     const textbox = new Textbox('test', { width: 5 });
 

@@ -49,6 +49,7 @@ import type { Gradient } from '../../gradient/Gradient';
 import type { Pattern } from '../../Pattern';
 import type { CSSRules } from '../../parser/typedefs';
 import { normalizeWs } from '../../util/internals/normalizeWhiteSpace';
+import { uid } from '../../util/internals/uid';
 
 let measuringContext: CanvasRenderingContext2D | null;
 
@@ -89,6 +90,27 @@ export type TextAlign =
 
 export type FontStyle = '' | typeof NORMAL | 'italic' | 'oblique';
 
+export type ParagraphStyle = {
+  align?: TextAlign;
+  lineHeight?: number;
+};
+
+export type Paragraph = {
+  id: string;
+  style?: ParagraphStyle;
+};
+
+export type LineMeta = {
+  paragraphIndex: number;
+  // inclusive range in text char indices for this visual line
+  startChar: number;
+  endChar: number;
+  // true if this line ends with a hard newline in the original text
+  isHardBreakEnd: boolean;
+  // true if this is the last *visual* line of a paragraph (hard break or wrap end)
+  isLastLineOfParagraph: boolean;
+};
+
 /**
  * Measure and return the info of a single grapheme.
  * needs the the info of previous graphemes already filled
@@ -122,6 +144,7 @@ interface UniqueTextProps {
   direction: CanvasDirection;
   path?: Path;
   textDecorationThickness: number;
+  paragraphs?: Paragraph[];
 }
 
 export interface SerializedTextProps
@@ -417,6 +440,15 @@ export class FabricText<
   declare __lineHeights: number[];
   declare __lineWidths: number[];
   declare initialized?: true;
+  paragraphs: Paragraph[] = [];
+
+  protected __paragraphRanges: Array<{
+    startChar: number;
+    endChar: number;
+    id: string;
+  }> = [];
+  protected __lineMeta: LineMeta[] = [];
+  protected __rtLineHeights: number[] = [];
 
   static cacheProperties = [...cacheProperties, ...additionalProps];
 
@@ -474,7 +506,13 @@ export class FabricText<
    * Does not return dimensions.
    */
   initDimensions() {
+    if (this.paragraphs?.length) {
+      this.__syncParagraphsWithText();
+    }
     this._splitText();
+    if (this.paragraphs?.length) {
+      this.__rebuildLineMetaAfterWrap();
+    }
     this._clearCache();
     this.dirty = true;
     if (this.path) {
@@ -488,6 +526,104 @@ export class FabricText<
     if (this.textAlign.includes(JUSTIFY)) {
       // once text is measured we need to make space fatter to make justified text.
       this.enlargeSpaces();
+    }
+  }
+
+  protected __syncParagraphsWithText(): void {
+    const paragraphsFromText = (this.text || '').split(this._reNewline);
+    const paragraphCount = paragraphsFromText.length;
+    const currentParagraphs = Array.isArray(this.paragraphs)
+      ? this.paragraphs
+      : [];
+    const nextParagraphs = currentParagraphs.slice(0, paragraphCount);
+    const fallbackStyle =
+      currentParagraphs[currentParagraphs.length - 1]?.style;
+    for (let i = nextParagraphs.length; i < paragraphCount; i++) {
+      nextParagraphs.push({
+        id: `paragraph_${uid()}`,
+        ...(fallbackStyle ? { style: { ...fallbackStyle } } : {}),
+      });
+    }
+    for (const paragraph of nextParagraphs) {
+      if (!paragraph.id) {
+        paragraph.id = `paragraph_${uid()}`;
+      }
+    }
+    this.paragraphs = nextParagraphs;
+    this.__paragraphRanges = [];
+    let charIndex = 0;
+    for (let i = 0; i < paragraphCount; i++) {
+      const startChar = charIndex;
+      const len = paragraphsFromText[i].length;
+      const endChar = len > 0 ? startChar + len - 1 : startChar;
+      this.__paragraphRanges.push({
+        startChar,
+        endChar,
+        id: nextParagraphs[i].id,
+      });
+      charIndex = endChar + 1;
+      if (i < paragraphCount - 1) {
+        charIndex += 1;
+      }
+    }
+  }
+
+  getParagraphIndexAtChar(charIndex: number): number {
+    for (let i = 0; i < this.__paragraphRanges.length; i++) {
+      const range = this.__paragraphRanges[i];
+      if (range.endChar < range.startChar && charIndex === range.startChar) {
+        return i;
+      }
+      if (charIndex >= range.startChar && charIndex <= range.endChar) {
+        return i;
+      }
+    }
+    return 0;
+  }
+
+  setParagraphStyle(
+    paragraphIndex: number,
+    patch: Partial<ParagraphStyle>,
+  ): void {
+    this.__syncParagraphsWithText();
+    const paragraph = this.paragraphs?.[paragraphIndex];
+    if (!paragraph) {
+      return;
+    }
+    paragraph.style = { ...paragraph.style, ...patch };
+    this.initDimensions();
+    this.setCoords();
+    this.dirty = true;
+  }
+
+  protected __rebuildLineMetaAfterWrap(): void {
+    const lines = this._textLines || [];
+    const ranges = this.__paragraphRanges || [];
+    const graphemeText = this._text || [];
+    this.__lineMeta = [];
+    let charIndex = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const lineLength = lines[i].length;
+      const startChar = charIndex;
+      const endChar = lineLength > 0 ? startChar + lineLength - 1 : startChar;
+      const nextCharIndex = startChar + lineLength;
+      const isHardBreakEnd =
+        nextCharIndex >= 0 &&
+        nextCharIndex < graphemeText.length &&
+        graphemeText[nextCharIndex] === '\n';
+      const paragraphIndex = this.getParagraphIndexAtChar(startChar);
+      const paragraphRange = ranges[paragraphIndex];
+      const isLastLineOfParagraph =
+        isHardBreakEnd ||
+        (paragraphRange && endChar === paragraphRange.endChar);
+      this.__lineMeta.push({
+        paragraphIndex,
+        startChar,
+        endChar,
+        isHardBreakEnd,
+        isLastLineOfParagraph,
+      });
+      charIndex += lineLength + (isHardBreakEnd ? 1 : 0);
     }
   }
 
@@ -1459,41 +1595,55 @@ export class FabricText<
    * @return {Number} Line left offset
    */
   _getLineLeftOffset(lineIndex: number): number {
-    const lineWidth = this.getLineWidth(lineIndex),
-      lineDiff = this.width - lineWidth,
-      textAlign = this.textAlign,
-      direction = this.direction,
-      isEndOfWrapping = this.isEndOfWrapping(lineIndex);
-    let leftOffset = 0;
+    const lineWidth = this.getLineWidth(lineIndex);
+    const lineDiff = this.width - lineWidth;
+
+    const baseAlign = this.textAlign;
+    const paragraphIndex = this.__lineMeta?.[lineIndex]?.paragraphIndex ?? 0;
+    const paragraphAlign = this.paragraphs?.[paragraphIndex]?.style?.align;
+
+    const effectiveAlign =
+      paragraphAlign &&
+      (paragraphAlign === LEFT ||
+        paragraphAlign === CENTER ||
+        paragraphAlign === RIGHT ||
+        paragraphAlign === JUSTIFY ||
+        paragraphAlign === JUSTIFY_LEFT ||
+        paragraphAlign === JUSTIFY_CENTER ||
+        paragraphAlign === JUSTIFY_RIGHT)
+        ? paragraphAlign
+        : baseAlign;
+
+    const isEndOfWrapping = this.isEndOfWrapping(lineIndex);
+    const direction = this.direction;
+
+    // justify variants: offset is 0 (do not change justify behavior beyond this)
     if (
-      textAlign === JUSTIFY ||
-      (textAlign === JUSTIFY_CENTER && !isEndOfWrapping) ||
-      (textAlign === JUSTIFY_RIGHT && !isEndOfWrapping) ||
-      (textAlign === JUSTIFY_LEFT && !isEndOfWrapping)
+      effectiveAlign === JUSTIFY ||
+      (effectiveAlign === JUSTIFY_CENTER && !isEndOfWrapping) ||
+      (effectiveAlign === JUSTIFY_RIGHT && !isEndOfWrapping) ||
+      (effectiveAlign === JUSTIFY_LEFT && !isEndOfWrapping)
     ) {
       return 0;
     }
-    if (textAlign === CENTER) {
+
+    let leftOffset = 0;
+    if (effectiveAlign === CENTER || effectiveAlign === JUSTIFY_CENTER) {
       leftOffset = lineDiff / 2;
-    }
-    if (textAlign === RIGHT) {
+    } else if (effectiveAlign === RIGHT || effectiveAlign === JUSTIFY_RIGHT) {
       leftOffset = lineDiff;
     }
-    if (textAlign === JUSTIFY_CENTER) {
-      leftOffset = lineDiff / 2;
-    }
-    if (textAlign === JUSTIFY_RIGHT) {
-      leftOffset = lineDiff;
-    }
+
     if (direction === RTL) {
-      if (textAlign === RIGHT || textAlign === JUSTIFY_RIGHT) {
+      if (effectiveAlign === RIGHT || effectiveAlign === JUSTIFY_RIGHT) {
         leftOffset = 0;
-      } else if (textAlign === LEFT || textAlign === JUSTIFY_LEFT) {
+      } else if (effectiveAlign === LEFT || effectiveAlign === JUSTIFY_LEFT) {
         leftOffset = -lineDiff;
-      } else if (textAlign === CENTER || textAlign === JUSTIFY_CENTER) {
+      } else if (effectiveAlign === CENTER || effectiveAlign === JUSTIFY_CENTER) {
         leftOffset = -lineDiff / 2;
       }
     }
+
     return leftOffset;
   }
 
@@ -1773,6 +1923,14 @@ export class FabricText<
     return {
       ...super.toObject([...additionalProps, ...propertiesToInclude] as K[]),
       styles: stylesToArray(this.styles, this.text),
+      ...(this.paragraphs?.length
+        ? {
+            paragraphs: this.paragraphs.map((paragraph) => ({
+              ...paragraph,
+              ...(paragraph.style ? { style: { ...paragraph.style } } : {}),
+            })),
+          }
+        : {}),
       ...(this.path ? { path: this.path.toObject() } : {}),
     };
   }
@@ -1940,6 +2098,7 @@ export class FabricText<
       {
         ...object,
         styles: stylesFromArray(object.styles || {}, object.text),
+        paragraphs: object.paragraphs ?? [],
       },
       {
         extraParam: 'text',

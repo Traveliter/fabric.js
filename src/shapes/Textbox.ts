@@ -129,6 +129,9 @@ export class Textbox<
       return;
     }
     this.isEditing && this.initDelayedCursor();
+    if (this.paragraphs?.length) {
+      this.__syncParagraphsWithText();
+    }
     this._clearCache();
     // clear dynamicMinWidth as it will be different after we re-wrap line
     this.dynamicMinWidth = 0;
@@ -144,6 +147,22 @@ export class Textbox<
     }
     // clear cache and re-calculate height
     this.height = this.calcTextHeight();
+    if (this.paragraphs?.length) {
+      this.__rebuildLineMetaAfterWrap();
+    }
+  }
+
+  protected __rebuildLineMetaAfterWrap(): void {
+    super.__rebuildLineMetaAfterWrap();
+    if (!this._styleMap) {
+      return;
+    }
+    for (let i = 0; i < this.__lineMeta.length; i++) {
+      const map = this._styleMap[i];
+      if (map) {
+        this.__lineMeta[i].paragraphIndex = map.line;
+      }
+    }
   }
 
   /**
