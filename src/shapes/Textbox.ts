@@ -250,8 +250,12 @@ export class Textbox<
       // Apply expansion like FabricText.enlargeSpaces() but only for the
       // spaces that are part of inter-word gaps.
       let accumulatedSpace = 0;
+      const charBoundsLine = this.__charBounds?.[i];
+      if (!charBoundsLine) {
+        continue;
+      }
       for (let j = 0; j <= line.length; j++) {
-        const charBound = this.__charBounds[i][j];
+        const charBound = charBoundsLine[j];
         if (!charBound) {
           continue;
         }
@@ -268,7 +272,7 @@ export class Textbox<
 
       // Keep cached line width coherent and avoid re-measuring (which would
       // overwrite modified char bounds).
-      this.__lineWidths[i] = this.getLineWidth(i) + lineDiff;
+      this.__lineWidths[i] = this.width;
     }
   }
 
