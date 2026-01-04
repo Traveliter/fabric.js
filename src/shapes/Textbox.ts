@@ -194,7 +194,8 @@ export class Textbox<
         continue;
       }
 
-      const lineDiff = this.width - this.getLineWidth(i);
+      const lineWidth = this.getLineWidth(i);
+      const lineDiff = this.width - lineWidth;
       if (lineDiff <= 0) {
         continue;
       }
@@ -234,14 +235,13 @@ export class Textbox<
         continue;
       }
 
-      const base = Math.floor(lineDiff / gaps.length);
-      const remainder = lineDiff - base * gaps.length;
+      // Float distribution: consistent total equals lineDiff.
+      const perGap = lineDiff / gaps.length;
 
       const spaceExtraByCharIndex = new Array<number>(line.length).fill(0);
       for (let g = 0; g < gaps.length; g++) {
         const gap = gaps[g];
-        const gapExtra = base + (g < remainder ? 1 : 0);
-        const perSpaceExtra = gapExtra / gap.count;
+        const perSpaceExtra = perGap / gap.count;
         for (let j = gap.start; j <= gap.end; j++) {
           spaceExtraByCharIndex[j] = perSpaceExtra;
         }
@@ -255,18 +255,20 @@ export class Textbox<
         continue;
       }
       for (let j = 0; j <= line.length; j++) {
-        const charBound = charBoundsLine[j];
-        if (!charBound) {
-          continue;
-        }
-
         const extra = j < line.length ? spaceExtraByCharIndex[j] : 0;
-        if (extra > 0) {
-          charBound.width += extra;
-          charBound.kernedWidth += extra;
+        const charBound = charBoundsLine[j];
+        if (charBound) {
+          if (extra > 0) {
+            charBound.width += extra;
+            charBound.kernedWidth += extra;
+          }
+
+          // Only apply left shift when bounds exist.
+          // Always accumulate shift regardless (see below).
+          charBound.left += accumulatedSpace;
         }
 
-        charBound.left += accumulatedSpace;
+        // Always accumulate even if a bound slot is missing.
         accumulatedSpace += extra;
       }
 
