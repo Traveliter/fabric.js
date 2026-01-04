@@ -450,13 +450,37 @@ export class FabricText<
   protected __lineMeta: LineMeta[] = [];
   protected __rtLineHeights: number[] = [];
 
+  /**
+   * Returns the effective text alignment for a given *visual* line.
+   *
+   * Paragraph alignment (when available) takes precedence over `this.textAlign`.
+   * If no paragraph alignment exists for the line, we fallback to `this.textAlign`.
+   */
+  protected __getEffectiveAlignForLine(lineIndex: number): TextAlign {
+    const baseAlign = this.textAlign;
+
+    const paragraphIndex = this.__lineMeta?.[lineIndex]?.paragraphIndex ?? 0;
+    const paragraphAlign = this.paragraphs?.[paragraphIndex]?.style?.align;
+
+    return paragraphAlign &&
+      (paragraphAlign === LEFT ||
+        paragraphAlign === CENTER ||
+        paragraphAlign === RIGHT ||
+        paragraphAlign === JUSTIFY ||
+        paragraphAlign === JUSTIFY_LEFT ||
+        paragraphAlign === JUSTIFY_CENTER ||
+        paragraphAlign === JUSTIFY_RIGHT)
+      ? paragraphAlign
+      : baseAlign;
+  }
+
   static cacheProperties = [...cacheProperties, ...additionalProps];
 
   static ownDefaults = textDefaultValues;
 
   static type = 'Text';
 
-  static getDefaults(): Record<string, any> {
+  static getDefaults(): Record<string, unknown> {
     return { ...super.getDefaults(), ...FabricText.ownDefaults };
   }
 
@@ -869,7 +893,7 @@ export class FabricText<
    */
   _setTextStyles(
     ctx: CanvasRenderingContext2D,
-    charStyle?: any,
+    charStyle?: Partial<CompleteTextStyleDeclaration>,
     forMeasuring?: boolean,
   ) {
     ctx.textBaseline = 'alphabetic';
@@ -1365,7 +1389,7 @@ export class FabricText<
   _renderChars(
     method: 'fillText' | 'strokeText',
     ctx: CanvasRenderingContext2D,
-    line: Array<any>,
+    line: string[],
     left: number,
     top: number,
     lineIndex: number,
@@ -1681,21 +1705,7 @@ export class FabricText<
     const lineWidth = this.getLineWidth(lineIndex);
     const lineDiff = this.width - lineWidth;
 
-    const baseAlign = this.textAlign;
-    const paragraphIndex = this.__lineMeta?.[lineIndex]?.paragraphIndex ?? 0;
-    const paragraphAlign = this.paragraphs?.[paragraphIndex]?.style?.align;
-
-    const effectiveAlign =
-      paragraphAlign &&
-      (paragraphAlign === LEFT ||
-        paragraphAlign === CENTER ||
-        paragraphAlign === RIGHT ||
-        paragraphAlign === JUSTIFY ||
-        paragraphAlign === JUSTIFY_LEFT ||
-        paragraphAlign === JUSTIFY_CENTER ||
-        paragraphAlign === JUSTIFY_RIGHT)
-        ? paragraphAlign
-        : baseAlign;
+    const effectiveAlign = this.__getEffectiveAlignForLine(lineIndex);
 
     const isEndOfWrapping = this.isEndOfWrapping(lineIndex);
     const direction = this.direction;
@@ -2021,9 +2031,9 @@ export class FabricText<
     };
   }
 
-  set(key: string | any, value?: any) {
+  set(key: string | Record<string, unknown>, value?: unknown) {
     const { textLayoutProperties } = this.constructor as typeof FabricText;
-    super.set(key, value);
+    super.set(key as never, value as never);
     let needsDims = false;
     let isAddingPath = false;
     if (typeof key === 'object') {
