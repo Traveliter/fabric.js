@@ -9,7 +9,7 @@ import {
   JUSTIFY_RIGHT,
 } from './Text/constants';
 import type { TextStyleDeclaration } from './Text/StyledText';
-import type { CursorBoundaries, CursorRenderingData, SerializedITextProps, ITextProps } from './IText/IText';
+import type { SerializedITextProps, ITextProps } from './IText/IText';
 import type { ITextEvents } from './IText/ITextBehavior';
 import type { TextLinesInfo } from './Text/Text';
 import type { Control } from '../controls/Control';
@@ -278,30 +278,32 @@ export class Textbox<
     }
   }
 
-protected __getEffectiveLineHeightForLine(lineIndex: number): number {
-  const base = this.lineHeight;
-  const paragraphIndex = this.__lineMeta?.[lineIndex]?.paragraphIndex ?? 0;
-  const paragraphLH = this.paragraphs?.[paragraphIndex]?.style?.lineHeight;
-  return typeof paragraphLH === 'number' ? paragraphLH : base;
-}
-
-protected override getHeightOfLine(lineIndex: number): number {
-  const effectiveLH = this.__getEffectiveLineHeightForLine(lineIndex);
-  return super.getHeightOfLine(lineIndex) / this.lineHeight * effectiveLH;
-}
-
-protected __rebuildLineMetaAfterWrap(): void {
-  super.__rebuildLineMetaAfterWrap();
-  if (!this._styleMap) {
-    return;
+  protected __getEffectiveLineHeightForLine(lineIndex: number): number {
+    const base = this.lineHeight;
+    const paragraphIndex = this.__lineMeta?.[lineIndex]?.paragraphIndex ?? 0;
+    const paragraphLH = this.paragraphs?.[paragraphIndex]?.style?.lineHeight;
+    return typeof paragraphLH === 'number' && paragraphLH > 0
+      ? paragraphLH
+      : base;
   }
-  for (let i = 0; i < this.__lineMeta.length; i++) {
-    const map = this._styleMap[i];
-    if (map) {
-      this.__lineMeta[i].paragraphIndex = map.line;
+
+  override getHeightOfLine(lineIndex: number): number {
+    const effectiveLH = this.__getEffectiveLineHeightForLine(lineIndex);
+    return (super.getHeightOfLine(lineIndex) / this.lineHeight) * effectiveLH;
+  }
+
+  protected __rebuildLineMetaAfterWrap(): void {
+    super.__rebuildLineMetaAfterWrap();
+    if (!this._styleMap) {
+      return;
+    }
+    for (let i = 0; i < this.__lineMeta.length; i++) {
+      const map = this._styleMap[i];
+      if (map) {
+        this.__lineMeta[i].paragraphIndex = map.line;
+      }
     }
   }
-}
 
   /**
    * Generate an object that translates the style object so that it is

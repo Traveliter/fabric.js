@@ -1106,4 +1106,31 @@ describe('Textbox', () => {
     expect(leftLine).toBeGreaterThanOrEqual(0);
     expect(textbox.getLineWidth(leftLine)).toBeLessThan(textbox.width - 0.5);
   });
+
+  it('paragraph lineHeight increases Textbox height vs baseline', () => {
+    const textbox = new Textbox('para1\\npara2\\npara3', {
+      width: 300,
+      lineHeight: 1.2,
+      fontSize: 40,
+    });
+    textbox.initDimensions();
+    const baselineHeight = textbox.height;
+    textbox.setParagraphStyle(1, { lineHeight: 2.2 });
+    textbox.initDimensions();
+    expect(textbox.height).toBeGreaterThan(baselineHeight);
+  });
+
+  it('only the paragraph with lineHeight override affects height (mixed paragraphs)', () => {
+    const textbox = new Textbox('para1\\npara2\\npara3', {
+      width: 300,
+      lineHeight: 1.2,
+      fontSize: 40,
+    });
+    textbox.initDimensions();
+    const baselineHeight = textbox.height;
+    textbox.setParagraphStyle(0, { lineHeight: 2.2 });
+    textbox.setParagraphStyle(2, { lineHeight: 1.2 });
+    textbox.initDimensions();
+    expect(textbox.height).toBeGreaterThan(baselineHeight);
+  });
 });
